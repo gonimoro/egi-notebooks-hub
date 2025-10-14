@@ -146,19 +146,20 @@ class EGISpawner(KubeSpawner):
         user_secret_volume_name = f"{self._token_secret_volume_name}-user"
         # Remove the secret from mounts and re-add it
         # just to ensure we don't have it duplicated
-        new_mounts = list(
-            filter(
-                lambda x: x["name"]
-                not in [self._token_secret_volume_name, user_secret_volume_name],
-                self._sorted_dict_values(self.volume_mounts),
-            )
-        )
-        new_mounts.append(
+        new_mounts = {}
+
+        for m_name, mount in self._sorted_dict_values(self.volume_mounts).items():
+            if m_name not in [self._token_secret_volume_name, user_secret_volume_name]:
+                new_mounts.update({m_name: mount})
+
+        new_mounts.update(
             {
-                "name": user_secret_volume_name,
-                "mountPath": self.token_mount_path,
-                # read only when is the real secret, otherwise not
-                "readOnly": self.mount_secrets_volume,
+                user_secret_volume_name: {
+                    "name": user_secret_volume_name,
+                    "mountPath": self.token_mount_path,
+                    # read only when is the real secret, otherwise not
+                    "readOnly": self.mount_secrets_volume,
+                }
             }
         )
         self.volume_mounts = new_mounts
@@ -166,24 +167,29 @@ class EGISpawner(KubeSpawner):
         # We setup two volumes: one towards the user and another for sidecars
         # depending on whether the mount_secrets_volume option, the user
         # will have the actual content or just an emptyDir
-        new_volumes = list(
-            filter(
-                lambda x: x["name"]
-                not in [self._token_secret_volume_name, user_secret_volume_name],
-                self.volumes,
-            )
-        )
+        new_volumes = {}
+
+        for v_name, vol in self.volumes.items():
+            if v_name not in [self._token_secret_volume_name, user_secret_volume_name]:
+                new_mounts.update({v_name: vol})
+
         sidecar_secret = {
-            "name": self._token_secret_volume_name,
-            "secret": {"secretName": self.token_secret_name},
+            self._token_secret_volume_name: {
+                "name": self._token_secret_volume_name,
+                "secret": {"secretName": self.token_secret_name},
+            }
         }
-        new_volumes.append(sidecar_secret)
-        user_secret = {"name": user_secret_volume_name}
+        new_volumes.update(sidecar_secret)
+        user_secret = {user_secret_volume_name: {"name": user_secret_volume_name}}
         if not self.mount_secrets_volume:
-            user_secret.update({"emptyDir": {"medium": "Memory"}})
+            user_secret[user_secret_volume_name].update(
+                {"emptyDir": {"medium": "Memory"}}
+            )
         else:
-            user_secret.update({"secret": {"secretName": self.token_secret_name}})
-        new_volumes.append(user_secret)
+            user_secret[user_secret_volume_name].update(
+                {"secret": {"secretName": self.token_secret_name}}
+            )
+        new_volumes.update(user_secret)
         self.volumes = new_volumes
         # set also the env
         self.environment.update(
@@ -201,14 +207,11 @@ class EGISpawner(KubeSpawner):
             ):
                 self.pvc_name = pvc.metadata.name
                 break
-        vols = []
         # pylint: disable=access-member-before-definition
-        for v in self.volumes:
+        for v in self.volumes.values():
             claim = v.get("persistentVolumeClaim", {})
             if claim.get("claimName", "").startswith("claim-"):
                 v["persistentVolumeClaim"]["claimName"] = self.pvc_name
-            vols.append(v)
-        self.volumes = vols
 
     def _profile_filter(self, spawner):
         profile_list = []
